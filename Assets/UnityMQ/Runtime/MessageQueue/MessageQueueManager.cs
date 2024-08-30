@@ -107,7 +107,8 @@ namespace UnityMQ
 
         public static bool IsTopicMatch(string messageTopic, string subscriptionTopic)
         {
-            return messageTopic == subscriptionTopic || messageTopic.StartsWith(subscriptionTopic + "/");
+            return subscriptionTopic == "#" || messageTopic == subscriptionTopic ||
+                   messageTopic.StartsWith(subscriptionTopic + "/");
         }
 
         public bool IsClientSubscribed(IPEndPoint clientEndPoint, string topic)

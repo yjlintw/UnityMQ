@@ -104,6 +104,7 @@ namespace UnityMQ
                 catch (Exception e)
                 {
                     Debug.LogError($"Error in discovery process: {e.Message}");
+                    break;
                 }
             }
                 
@@ -205,12 +206,10 @@ namespace UnityMQ
                 catch (Exception e)
                 {
                     Console.WriteLine(e);
-                    throw;
+                    break;
                 }
+                await Task.Delay(_heartbeatInterval, cancellationToken);
             }
-            
-            await Task.Delay(_heartbeatInterval, cancellationToken);
         }
-        
     }
 }

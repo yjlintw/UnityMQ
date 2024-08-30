@@ -1,0 +1,79 @@
+<!-- File: public/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UnityMQ Message Viewer</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #f4f4f4; }
+        .message-table { max-height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>UnityMQ Messages</h1>
+    <div class="message-table">
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Topic</th>
+                    <th>Message Content</th>
+                </tr>
+            </thead>
+            <tbody id="messages"></tbody>
+        </table>
+    </div>
+
+    <script>
+        const messagesTbody = document.getElementById('messages');
+        const ws = new WebSocket('ws://localhost:3000');
+        const topicRows = {}; // Object to keep track of topics and their rows
+
+        ws.onmessage = (event) => {
+            const messageData = JSON.parse(event.data);
+            const topic = messageData.Topic;
+
+            if (topicRows[topic]) {
+                // Update existing row if topic already exists
+                const row = topicRows[topic];
+                row.cells[0].textContent = messageData.Timestamp;
+                row.cells[2].textContent = JSON.stringify(messageData.Values);
+            } else {
+                // Create a new row for a new topic
+                const row = document.createElement('tr');
+
+                const timestampCell = document.createElement('td');
+                timestampCell.textContent = messageData.Timestamp;
+                row.appendChild(timestampCell);
+
+                const topicCell = document.createElement('td');
+                topicCell.textContent = topic;
+                row.appendChild(topicCell);
+
+                const contentCell = document.createElement('td');
+                contentCell.textContent = JSON.stringify(messageData.Values);
+                row.appendChild(contentCell);
+
+                messagesTbody.appendChild(row);
+                topicRows[topic] = row; // Store reference to this row
+            }
+        };
+
+        ws.onopen = () => {
+            console.log('WebSocket connection established.');
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket connection closed.');
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+        };
+    </script>
+</body>
+</html>

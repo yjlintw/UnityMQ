@@ -40,7 +40,7 @@ namespace UnityMQ
             }
             catch (Exception e)
             {
-                Debug.LogError(e);
+                Debug.LogError($"{e.Message}\n{json}");
                 return null;
             }
         }

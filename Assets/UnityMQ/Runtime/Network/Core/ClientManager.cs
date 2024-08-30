@@ -65,6 +65,7 @@ namespace UnityMQ
                 {
                     Debug.Log("No Server Found. Retry server discovery...");
                     await Task.Delay(_discoveryRetryInterval, cancellationToken);
+                    continue;
                 }
                 
                 // Connect to server
@@ -116,7 +117,7 @@ namespace UnityMQ
             var result = receiveTask.Result;
             string receivedMessage = Encoding.UTF8.GetString(result.Buffer);
 
-            if (receivedMessage == TopicConfig.DiscoveryServer)
+            if (receivedMessage == TopicConfig.ServerResponse)
             {
                 Debug.Log($"Server discovered at: {result.RemoteEndPoint.Address}");
                 return result.RemoteEndPoint.Address;
