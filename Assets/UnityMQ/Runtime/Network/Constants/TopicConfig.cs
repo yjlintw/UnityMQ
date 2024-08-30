@@ -15,5 +15,8 @@ namespace UnityMQ.Constants
         
         public const string TopicKey = "topic";
         public const string Heartbeat = "heartbeat";
+
+        public const string CommandBase = "command";
+        public const string StatusBase = "status";
     }
 }

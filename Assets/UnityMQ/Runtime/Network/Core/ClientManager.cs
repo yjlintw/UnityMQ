@@ -3,9 +3,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Unity.Plastic.Newtonsoft.Json;
+using UnityEditor.PackageManager;
 using UnityEngine;
 using UnityMQ.Constants;
 
@@ -22,16 +25,34 @@ namespace UnityMQ
         private readonly TimeSpan _heartbeatInterval = TimeSpan.FromSeconds(NetworkConfig.HeartbeatIntervalSeconds);
         private readonly TimeSpan _heartbeatTimeout = TimeSpan.FromSeconds(NetworkConfig.HeartbeatTimeoutSeconds);
         private readonly TimeSpan _reconnectInterval = TimeSpan.FromSeconds(NetworkConfig.ReconnectIntervalSeconds);
+        private readonly TimeSpan _statusUpdateInterval = TimeSpan.FromSeconds(5);
         private readonly TimeSpan _discoveryRetryInterval =
             TimeSpan.FromSeconds(NetworkConfig.DiscoveryRetryIntervalSeconds);
         private readonly MessageQueueManager _messageQueueManager = new MessageQueueManager();
         private CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         public Action onServerConnected;
+        public string ClientId { get; private set; }
 
-        public async Task StartClientAsync()
+        private CommandHandlerGenerator _commandHandlerGenerator;
+        private GameObject _rootObject;
+        private Dictionary<string, Action<Dictionary<string,object>>> _commandHandlers = new Dictionary<string, Action<Dictionary<string,object>>>();
+
+        public async Task StartClientAsync(GameObject rootObject)
         {
             _cancellationTokenSource = new CancellationTokenSource();
+            ClientId = GenerateClientId();
             await StartClientDiscoveryAsync(_cancellationTokenSource.Token);
+            
+            this._rootObject = rootObject;
+            
+            // Subscribe to all relevant command for this client
+            SubscribeToClientCommands();
+            
+            // Use CommandHandlerGenerator to create handlers
+            _commandHandlerGenerator = new CommandHandlerGenerator(RegisterCommandHandler);
+            _commandHandlerGenerator.GenerateHandlersForHierarchy(rootObject, ClientId);
+            
+            _ = StartStatusUpdateAsync(_cancellationTokenSource.Token);
         }
 
         public void StopClient()
@@ -53,6 +74,14 @@ namespace UnityMQ
                 _discoveryClient?.Dispose();
                 _discoveryClient = null;
             }
+            
+            _cancellationTokenSource.Dispose();
+            _cancellationTokenSource = null;
+        }
+        
+        private string GenerateClientId()
+        {
+            return Guid.NewGuid().ToString();
         }
 
         public async Task StartClientDiscoveryAsync(CancellationToken cancellationToken)
@@ -108,6 +137,7 @@ namespace UnityMQ
                 Debug.Log($"Send DiscoveryRequest failed: {e.Message}");
             }
         }
+
 
         private async Task<IPAddress> ReceiveServerResponseAsync(UdpClient udpClient)
         {
@@ -176,6 +206,12 @@ namespace UnityMQ
                     else
                     {
                         _messageQueueManager.Publish(message);
+                        
+                        // Handle web command if applicable
+                        if (_commandHandlers.ContainsKey(message.Topic))
+                        {
+                            _commandHandlers[message.Topic]?.Invoke(message.Values);
+                        }
                     }
                 }
                 catch (Exception e)
@@ -279,6 +315,140 @@ namespace UnityMQ
             byte[] data = message.Serialize();
             await _udpClient.SendAsync(data, data.Length);
             Debug.Log($"Unsubscribed to topic [{topic}].");
+        }
+
+        private void SubscribeToClientCommands()
+        {
+            string commandSubscriptionTopic = $"{TopicConfig.CommandBase}/{ClientId}";
+            SubscribeAsync(commandSubscriptionTopic, HandleIncomingCommand);
+            Debug.Log($"Subscribed to {commandSubscriptionTopic}");
+        }
+        private void HandleIncomingCommand(Message message)
+        {
+            if (_commandHandlers.ContainsKey(message.Topic))
+            {
+                try
+                {
+                    var deserializedData = new Dictionary<string, object>();
+
+                    var jsonSetting = new JsonSerializerSettings
+                    {
+                        Converters = new List<JsonConverter>
+                        {
+                            new Vector3Converter(),
+                            new ColorConverter(),
+                            new QuaternionConverter(),
+                            new Vector2Converter(),
+                        }
+                    };
+                    
+                    foreach (var kvp in message.Values)
+                    {
+                        // Deserialize each value to its appropriate type
+                        object deserializedValue = JsonConvert.DeserializeObject<object>(kvp.Value.ToString(), jsonSetting);
+                        deserializedData[kvp.Key] = deserializedValue;
+                    }
+
+                    _commandHandlers[message.Topic]?.Invoke(deserializedData);
+                    Debug.Log($"Handled command for topic {message.Topic} with data: {deserializedData}");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"Error processing command for topic {message.Topic}: {e.Message}");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"No command handler registered for topic [{message.Topic}].");
+            }
+        }
+
+        public void RegisterCommandHandler(string topic, Action<Dictionary<string, object>> handler)
+        {
+            if (_commandHandlers.TryAdd(topic, handler))
+            {
+                Debug.Log($"Registered handler for topic [{topic}].");
+            }
+        }
+
+        public void UnregisterCommandHandler(string topic)
+        {
+            if (_commandHandlers.ContainsKey(topic))
+            {
+                _commandHandlers.Remove(topic);
+                Debug.Log($"Unregistered command handler for topic [{topic}].");
+            }
+        }
+
+        private async Task StartStatusUpdateAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    SendStatusUpdate();
+                    await Task.Delay(_statusUpdateInterval, cancellationToken);
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("Status update task was canceled or encountered an error: " + e.Message);
+            }
+        }
+
+        private void SendStatusUpdate()
+        {
+            var statusData = new Dictionary<string, object>();
+            MonoBehaviour[] components = _rootObject.GetComponentsInChildren<MonoBehaviour>(true);
+            foreach (var component in components)
+            {
+                var fields = component.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                foreach (var field in fields)
+                {
+                    var attr = field.GetCustomAttribute<RemoteStatusAttribute>();
+                    if (attr != null)
+                    {
+                        string statusKey = $"{_rootObject.GetInstanceID()}.{attr.DisplayName}";
+                        object fieldValue = field.GetValue(component);
+                        
+                        // Configure JSON settings to ignore self-referencing loop
+                        var jsonSetting = new JsonSerializerSettings
+                        {
+                            ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+                            Converters = new List<JsonConverter>
+                            {
+                                new Vector3Converter(),
+                                new ColorConverter(),
+                                new QuaternionConverter(),
+                                new Vector2Converter(),
+                            }
+                        };
+                        
+                        // Log the field value before serialization
+                        string serializedValue = JsonConvert.SerializeObject(fieldValue, jsonSetting);
+                        statusData[statusKey] = serializedValue;
+                        // Log the serialized value
+                        Debug.Log($"Serialized value for {statusKey}: {serializedValue}");
+                    }
+                }
+            }
+            
+            // Log the full status data dictionary before sending
+            Debug.Log($"Status Data to Send: {JsonConvert.SerializeObject(statusData)}");
+            
+            // Create and send the status message
+            string topic = $"{TopicConfig.StatusBase}/{ClientId}";
+            var message = new Message(topic, DateTime.UtcNow, statusData);
+            byte[] data = message.Serialize();
+            try
+            {
+                _udpClient.SendAsync(data, data.Length);
+                Debug.Log($"Sent status update to topic [{topic}].");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Failed to send status update: {e.Message}");
+            }
         }
     }
 }
